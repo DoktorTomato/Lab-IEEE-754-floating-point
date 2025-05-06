@@ -53,4 +53,29 @@ The main difference is preciosion, because as the larger the total bit size the 
 
 Also there is an intresting differnce in FP80 because it doesn't asume that the first bit of Mantisa is 1 and it explicitly includes first bit in mantisa.
 
-Tests:
+After running all programs on the same tests we recieve this results:
+
+# Tests
+
+| Input                | FP16 Error         | FP32 Error           | FP64 Error            | FP80 Error |
+|---------------------|--------------------|----------------------|------------------------|------------|
+| 0                   | 0                  | 0                    | 0                      | 0          |
+| -0                  | 0                  | 0                    | 0                      | 0          |
+| 1                   | 0                  | 0                    | 0                      | 0          |
+| -1                  | 0                  | 0                    | 0                      | 0          |
+| 123.456             | 0.0185012817382812 | 0                    | 1.281738e-06           | 0          |
+| -123.456            | 0.0185012817382812 | 0                    | 1.281738e-06           | 0          |
+| 0.333333            | 8.10325e-05        | 8.94070e-08          | 1.43604e-08            | 0          |
+| 1024                | 0                  | 0                    | 0                      | 0          |
+| 0.0009765625        | 0                  | 0                    | 0                      | 0          |
+| 3.14159265358979    | 0.0009677410125732 | 0                    | 8.74228e-08            | 0          |
+| -42.42              | 0.0137481689453125 | 0                    | 1.83105e-06            | 0          |
+| 1e-10               | 1e-10              | 1e-10                | 1e-10                  | 0          |
+| 10000000000         | 9.99993e+09        | 7.85252e+09          | 7.85252e+09            | 0          |
+| inf                 | inf                | inf                  | inf                    | nan        |
+| -inf                | inf                | inf                  | inf                    | nan        |
+| nan (decoded=98304) | nan                | nan                  | nan                    | nan        |
+| nan (decoded=98304) | nan                | nan                  | nan                    | nan        |
+
+
+As we can see the precision is getting better for each next FP
