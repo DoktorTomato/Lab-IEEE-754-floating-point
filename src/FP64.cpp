@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <vector>
 #include <limits>
+#include <iomanip>
+
 int sign_bit = 1;
 int exp_bits = 11;
 int mant_bits = 52;
@@ -201,7 +203,68 @@ void run_tests() {
     }
 }
 
+template <typename FPType, typename FloatType>
+void run_shared_tests(const std::string& type_name) {
+    std::vector<FloatType> test_vals = {
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        123.456,
+        -123.456,
+        0.333333,
+        1024.0,
+        0.0009765625,
+        3.14159265358979,
+        -42.42,
+        1.0e-10,
+        1.0e+10,
+        std::numeric_limits<FloatType>::infinity(),
+        -std::numeric_limits<FloatType>::infinity(),
+        std::numeric_limits<FloatType>::quiet_NaN(),
+        std::numeric_limits<FloatType>::signaling_NaN()
+    };
+
+    std::cout << "=== " << type_name << " Test Results ===\n";
+    for (FloatType val : test_vals) {
+        FPType encoded;
+
+        if constexpr (std::is_same<FloatType, float>::value) {
+            encoded = FPType::from_float(val);
+        } else if constexpr (std::is_same<FloatType, double>::value) {
+            encoded = FPType::from_double(val);
+        } else if constexpr (std::is_same<FloatType, long double>::value) {
+            encoded = FPType::from_long_double(val);
+        }
+
+        FloatType decoded;
+        if constexpr (std::is_same<FloatType, float>::value) {
+            decoded = encoded.to_float();
+        } else if constexpr (std::is_same<FloatType, double>::value) {
+            decoded = encoded.to_double();
+        } else if constexpr (std::is_same<FloatType, long double>::value) {
+            decoded = encoded.to_long_double();
+        }
+
+        std::cout << "Input: " << std::setprecision(15) << val << "\n";
+        encoded.print_bits();
+        std::cout << "Decoded: " << std::setprecision(15) << decoded << "\n";
+
+        if (std::isnan(val) && std::isnan(decoded)) {
+            std::cout << "Result: PASS (NaN)\n";
+        }
+        else if (std::isinf(val) && std::isinf(decoded) && (val > 0) == (decoded > 0)) {
+            std::cout << "Result: PASS (Infinity)\n";
+        }
+        else {
+            FloatType abs_err = std::fabs(val - decoded);
+            std::cout << "Abs error: " << abs_err << "\n";
+        }
+        std::cout << "------------------------\n";
+    }
+}
+
 int main() {
-    run_tests();
+    run_shared_tests<FP64, double>("FP64");
     return 0;
 }
