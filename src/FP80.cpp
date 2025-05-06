@@ -8,73 +8,70 @@
 #include <vector>
 #include <limits>
 int sign_bit = 1;
-int exp_bits = 11;
-int mant_bits = 52;
+int exp_bits = 15;
+int mant_bits = 64;
 
-struct FP64 {
+struct FP80 {
     std::array<bool, 1> sign;
-    std::array<bool, 11> exp;
-    std::array<bool, 52> mant;
+    std::array<bool, 15> exp;
+    std::array<bool, 64> mant;
 
-    static FP64 from_double(double x) {
-        FP64 fp;
+    static FP80 from_long_double(long double x) {
+        FP80 fp;
         fp.sign[0] = x < 0;
-        float abs_x = std::fabs(x);
+        long double abs_x = std::fabsl(x);
 
         if (std::isnan(x)) {
             fp.exp.fill(1);
+            fp.mant.fill(0);
             fp.mant[0] = 1;
-            for (int i = 1; i < exp_bits; ++i)
-                fp.mant[i] = 0;
             return fp;
         }
 
-        if (x == std::numeric_limits<float>::infinity() || x == -std::numeric_limits<float>::infinity()) {
+        if (std::isinf(x)) {
             fp.exp.fill(1);
             fp.mant.fill(0);
             return fp;
         }
-        if (abs_x == 0.0f) {
+
+        if (abs_x == 0.0L) {
             fp.exp.fill(0);
             fp.mant.fill(0);
             return fp;
         }
 
-        int int_part = (int)abs_x;
-        float frac_part = abs_x - int_part;
+        uint64_t int_part = static_cast<uint64_t>(abs_x);
+        long double frac_part = abs_x - static_cast<long double>(int_part);
+
         std::vector<bool> int_bin;
-        if (int_part > 0) {
-            while (int_part > 0) {
-                int_bin.insert(int_bin.begin(), int_part % 2);
-                int_part /= 2;
-            }
+        while (int_part > 0) {
+            int_bin.insert(int_bin.begin(), int_part % 2);
+            int_part /= 2;
         }
 
         std::vector<bool> frac_bin;
-        int max_frac_bits = mant_bits;
-        while (frac_bin.size() < max_frac_bits && frac_part > std::numeric_limits<float>::epsilon()) {
+        int max_frac_bits = mant_bits * 2;
+        while (frac_bin.size() < max_frac_bits && frac_part > 0.0L) {
             frac_part *= 2;
-            bool bit = frac_part >= 1.0f;
+            bool bit = frac_part >= 1.0L;
             frac_bin.push_back(bit);
-            if (bit) frac_part -= 1.0f;
+            if (bit) frac_part -= 1.0L;
         }
 
         std::vector<bool> mantissa_bits;
         int exponent_unbiased;
 
         if (!int_bin.empty()) {
-            exponent_unbiased = int_bin.size() - 1;
-            // видаляємо першу 1, додаємо все інше + дробову
+            exponent_unbiased = static_cast<int>(int_bin.size()) - 1;
             for (size_t i = 1; i < int_bin.size(); ++i)
                 mantissa_bits.push_back(int_bin[i]);
-            for (bool bit : frac_bin)
-                mantissa_bits.push_back(bit);
+            for (bool b : frac_bin)
+                mantissa_bits.push_back(b);
         } else {
-            // ціла частина 0 — шукаємо першу 1 в дробовій
             int first_one = -1;
             for (size_t i = 0; i < frac_bin.size(); ++i) {
                 if (frac_bin[i]) {
-                    first_one = i;
+                    first_one = static_cast<int>(i);
                     break;
                 }
             }
@@ -88,9 +85,8 @@ struct FP64 {
                 mantissa_bits.push_back(frac_bin[i]);
         }
 
-        int exponent_biased = exponent_unbiased + 1023;
+        int exponent_biased = exponent_unbiased + 16383;
 
-        // денормалізоване число
         if (exponent_biased <= 0) {
             fp.exp.fill(0);
             int shift = 1 - exponent_biased;
@@ -100,42 +96,47 @@ struct FP64 {
             return fp;
         }
 
-        // переповнення
-        if (exponent_biased >= 2047) {
+        if (exponent_biased >= 32767) {
             fp.exp.fill(1);
             fp.mant.fill(0);
             return fp;
         }
 
-        // нормалізоване число
-        for (int i = 10; i >= 0; --i)
-            fp.exp[10 - i] = (exponent_biased >> i) & 1;
+        for (int i = 0; i < 15; ++i)
+            fp.exp[i] = (exponent_biased >> (14 - i)) & 1;
+
         for (int i = 0; i < mant_bits; ++i)
             fp.mant[i] = (i < mantissa_bits.size()) ? mantissa_bits[i] : 0;
 
         return fp;
     }
 
-    double to_double() const {
-        uint64_t e = 0;
-        for (int i = 0; i < exp_bits; ++i)
-            e = (e << 1) | static_cast<uint64_t>(exp[i]);
+    long double to_long_double() const {
+        int exp_val = 0;
+        for (int i = 0; i < 15; ++i)
+            exp_val = (exp_val << 1) | exp[i];
 
-        uint64_t m = 0;
-        for (int i = 0; i < mant_bits; ++i)
-            m = (m << 1) | static_cast<uint64_t>(mant[i]);
+        bool is_zero_exp = (exp_val == 0);
+        bool is_all_ones_exp = (exp_val == 0x7FFF);
 
-        double frac = (e == 0)
-            ? static_cast<double>(m) / (1ULL << mant_bits)
-            : 1.0 + static_cast<double>(m) / (1ULL << mant_bits);
+        long double mantissa = 0.0L;
+        long double power = 0.5L;
+        for (int i = 0; i < mant_bits; ++i) {
+            if (mant[i])
+                mantissa += power;
+            power /= 2.0L;
+        }
 
-        int real_exp = static_cast<int>(e) - 1023;
-        double val = std::ldexp(frac, real_exp);
-        return sign[0] ? -val : val;
+        if (!is_zero_exp && !is_all_ones_exp)
+            mantissa += 1.0L;
+
+        int true_exp = is_zero_exp ? -16382 : (exp_val - 16383);
+        long double result = mantissa * std::powl(2.0L, true_exp);
+        return sign[0] ? -result : result;
     }
 
     void print_bits() const {
-        std::cout << "FP64 bits: ";
+        std::cout << "FP80 bits: ";
         std::cout << sign[0];
         for (bool b : exp) std::cout << b;
         for (bool b : mant) std::cout << b;
@@ -144,36 +145,36 @@ struct FP64 {
 };
 
 void run_tests() {
-    std::vector<double> test_vals = {
-        0.0,
-        -0.0,
-        1.0,
-        -1.0,
-        3.141592653589793,
-        -42.42,
-        0.33325,
-        1024.0,
-        5.960464477539063e-08,     // smallest normalized FP32
-        1.0e-45,                   // smallest subnormal FP32
-        1.17549421e-38,            // slightly below FP32 min normal
-        1.17549435e-38,            // FP32 min normal
-        3.4028235e+38,             // FP32 max
-        70000.0,
-        -70000.0,
-        std::numeric_limits<double>::infinity(),
-        -std::numeric_limits<double>::infinity(),
-        std::numeric_limits<double>::quiet_NaN(),
-        std::numeric_limits<double>::signaling_NaN()
+    std::vector<long double> test_vals = {
+        0.0L,
+        -0.0L,
+        1.0L,
+        -1.0L,
+        3.141592653589793238462643383279502884L,
+        -42.42L,
+        0.33325L,
+        1024.0L,
+        5.960464477539063e-08L,
+        1.0e-45L,
+        1.17549421e-38L,
+        1.17549435e-38L,
+        3.4028235e+38L,
+        70000.0L,
+        -70000.0L,
+        std::numeric_limits<long double>::infinity(),
+        -std::numeric_limits<long double>::infinity(),
+        std::numeric_limits<long double>::quiet_NaN(),
+        std::numeric_limits<long double>::signaling_NaN()
     };
 
-    std::cout << "=== FP64 Test Results ===\n";
-    for (double val : test_vals) {
-        FP64 encoded = FP64::from_double(val);
-        double decoded = encoded.to_double();
+    std::cout << "=== FP80 Test Results ===\n";
+    for (long double val : test_vals) {
+        FP80 encoded = FP80::from_long_double(val);
+        long double decoded = encoded.to_long_double();
 
-        std::cout << "Input double: " << val << "\n";
+        std::cout << "Input long double: " << val << "\n";
         encoded.print_bits();
-        std::cout << "Decoded double: " << decoded << "\n";
+        std::cout << "Decoded long double: " << decoded << "\n";
 
         bool all_exp_ones = std::all_of(encoded.exp.begin(), encoded.exp.end(), [](bool b){ return b; });
         bool all_exp_zeros = std::all_of(encoded.exp.begin(), encoded.exp.end(), [](bool b){ return !b; });
@@ -195,7 +196,7 @@ void run_tests() {
             std::cout << "Type: Normalized\n";
         }
 
-        double abs_err = std::fabs(val - decoded);
+        long double abs_err = std::fabsl(val - decoded);
         std::cout << "Abs error: " << abs_err << "\n";
         std::cout << "------------------------\n";
     }
