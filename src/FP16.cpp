@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <vector>
 #include <limits>
+
 struct FP16 {
     std::array<bool, 1> sign;
     std::array<bool, 5> exp;
@@ -16,77 +17,118 @@ struct FP16 {
         FP16 fp;
         fp.sign[0] = x < 0;
         float abs_x = std::fabs(x);
-        int bias = 15;
 
-        // === Випадок: нуль ===
-        if (abs_x == 0.0f) {
-            for (auto& b : fp.exp) b = 0;
-            for (auto& b : fp.mant) b = 0;
+        if (std::isnan(x)) {
+            fp.exp.fill(1);
+            fp.mant[0] = 1;
+            for (int i = 1; i < 10; ++i)
+                fp.mant[i] = 0;
             return fp;
         }
 
-        // Отримуємо експоненту і нормалізовану дробову частину
-        int exp;
-        float frac = std::frexp(abs_x, &exp);  // abs_x = frac * 2^exp, 0.5 <= frac < 1
+        if (x == std::numeric_limits<float>::infinity() || x == -std::numeric_limits<float>::infinity()) {
+            fp.exp.fill(1);
+            fp.mant.fill(0);
+            return fp;
+        }
+        if (abs_x == 0.0f) {
+            fp.exp.fill(0);
+            fp.mant.fill(0);
+            return fp;
+        }
 
-        int exponent = exp + bias - 1;
-
-        if (exponent <= 0) {
-            // === Ненормалізоване число ===
-            for (auto& b : fp.exp) b = 0;
-
-            // Здвигаємо frac для збереження в мантису без прихованої 1
-            int shift = 1 - exponent;
-            float denorm_frac = std::ldexp(frac, shift);
-
-            int mant = static_cast<int>(denorm_frac * 1024.0f + 0.5f);  // округлення
-            for (int i = 9; i >= 0; --i) {
-                fp.mant[i] = (mant >> i) & 1;
-            }
-
-        } else if (exponent >= 31) {
-            // === Переповнення — нескінченність ===
-            for (int i = 0; i < 5; ++i) fp.exp[i] = 1;
-            for (int i = 0; i < 10; ++i) fp.mant[i] = 0;
-
-        } else {
-            // === Нормалізоване число ===
-            for (int i = 4; i >= 0; --i)
-                fp.exp[4 - i] = (exponent >> i) & 1;
-
-            float norm_frac = frac * 2.0f - 1.0f; // видаляємо приховану 1
-            int mant = static_cast<int>(norm_frac * 1024.0f + 0.5f);
-            for (int i = 9; i >= 0; --i) {
-                fp.mant[i] = (mant >> i) & 1;
+        int int_part = (int)abs_x;
+        float frac_part = abs_x - int_part;
+        std::vector<bool> int_bin;
+        if (int_part > 0) {
+            while (int_part > 0) {
+                int_bin.insert(int_bin.begin(), int_part % 2);
+                int_part /= 2;
             }
         }
+
+        std::vector<bool> frac_bin;
+        int max_frac_bits = 20;
+        while (frac_bin.size() < max_frac_bits && frac_part > std::numeric_limits<float>::epsilon()) {
+            frac_part *= 2;
+            bool bit = frac_part >= 1.0f;
+            frac_bin.push_back(bit);
+            if (bit) frac_part -= 1.0f;
+        }
+
+        std::vector<bool> mantissa_bits;
+        int exponent_unbiased;
+
+        if (!int_bin.empty()) {
+            exponent_unbiased = int_bin.size() - 1;
+            // видаляємо першу 1, додаємо все інше + дробову
+            for (size_t i = 1; i < int_bin.size(); ++i)
+                mantissa_bits.push_back(int_bin[i]);
+            for (bool bit : frac_bin)
+                mantissa_bits.push_back(bit);
+        } else {
+            // ціла частина 0 — шукаємо першу 1 в дробовій
+            int first_one = -1;
+            for (size_t i = 0; i < frac_bin.size(); ++i) {
+                if (frac_bin[i]) {
+                    first_one = i;
+                    break;
+                }
+            }
+            if (first_one == -1) {
+                fp.exp.fill(0);
+                fp.mant.fill(0);
+                return fp;
+            }
+            exponent_unbiased = -1 * (first_one + 1);
+            for (size_t i = first_one + 1; i < frac_bin.size(); ++i)
+                mantissa_bits.push_back(frac_bin[i]);
+        }
+
+        int exponent_biased = exponent_unbiased + 15;
+
+        // денормалізоване число
+        if (exponent_biased <= 0) {
+            fp.exp.fill(0);
+            int shift = 1 - exponent_biased;
+            mantissa_bits.insert(mantissa_bits.begin(), shift, 0);
+            for (int i = 0; i < 10; ++i)
+                fp.mant[i] = (i < mantissa_bits.size()) ? mantissa_bits[i] : 0;
+            return fp;
+        }
+
+        // переповнення
+        if (exponent_biased >= 31) {
+            fp.exp.fill(1);
+            fp.mant.fill(0);
+            return fp;
+        }
+
+        // нормалізоване число
+        for (int i = 4; i >= 0; --i)
+            fp.exp[4 - i] = (exponent_biased >> i) & 1;
+        for (int i = 0; i < 10; ++i)
+            fp.mant[i] = (i < mantissa_bits.size()) ? mantissa_bits[i] : 0;
 
         return fp;
     }
 
 
-    // Повертає float із FP8
     float to_float() const {
-        // Зчитуємо експоненту
         int e = 0;
         for (int i = 0; i < 5; ++i) {
             e = (e << 1) | exp[i];
         }
-        // Зчитуємо мантису
         int m = 0;
         for (int i = 0; i < 10; ++i) {
             m = (m << 1) | mant[i];
         }
-        float frac = (e == 0) ? (m / 1024.0f) : (1.0f + m / 1024.0f);  // 10 біт мантиси
-
-        int real_exp = e - 15; // знімаємо bias
-
-        float val = std::ldexp(frac, real_exp); // frac * 2^exp
-
+        float frac = (e == 0) ? (m / 1024.0f) : (1.0f + m / 1024.0f);
+        int real_exp = e - 15;
+        float val = std::ldexp(frac, real_exp);
         return sign[0] ? -val : val;
     }
 
-    // Вивід бітів FP8
     void print_bits() const {
         std::cout << "FP16 bits: ";
         std::cout << sign[0];
@@ -96,11 +138,64 @@ struct FP16 {
     }
 };
 
+void run_tests() {
+    std::vector<float> test_vals = {
+        0.0f,
+        -0.0f,
+        1.0f,
+        -1.0f,
+        65504.0f,
+        0.0000000596046f,
+        0.00000000000001f,
+        -0.0000001f,
+        0.33325f,
+        1024.0f,
+        3.14159f,
+        -42.42f,
+        5.96046e-08f,
+        1e-8f,
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::signaling_NaN(),
+        70000.0f,
+        -70000.0f
+    };
+
+    std::cout << "=== FP16 Test Results ===\n";
+    for (float val : test_vals) {
+        FP16 encoded = FP16::from_float(val);
+        float decoded = encoded.to_float();
+
+        std::cout << "Input float: " << val << "\n";
+        encoded.print_bits();
+        std::cout << "Decoded float: " << decoded << "\n";
+
+        bool all_exp_ones = std::all_of(encoded.exp.begin(), encoded.exp.end(), [](bool b){ return b; });
+        bool all_exp_zeros = std::all_of(encoded.exp.begin(), encoded.exp.end(), [](bool b){ return !b; });
+        bool all_mant_zeros = std::all_of(encoded.mant.begin(), encoded.mant.end(), [](bool b){ return !b; });
+        bool any_mant_one = std::any_of(encoded.mant.begin(), encoded.mant.end(), [](bool b){ return b; });
+
+        if (all_exp_ones && any_mant_one) {
+            if (encoded.mant[0])
+                std::cout << "Type: Quiet NaN\n";
+            else
+                std::cout << "Type: Signaling NaN\n";
+        } else if (all_exp_ones && all_mant_zeros) {
+            std::cout << "Type: Infinity\n";
+        } else if (all_exp_zeros && all_mant_zeros) {
+            std::cout << "Type: Zero\n";
+        } else if (all_exp_zeros && any_mant_one) {
+            std::cout << "Type: Denormalized\n";
+        } else {
+            std::cout << "Type: Normalized\n";
+        }
+
+        float abs_err = std::fabs(val - decoded);
+        std::cout << "Abs error: " << abs_err << "\n";
+        std::cout << "------------------------\n";
+    }
+}
+
 int main() {
-    float input = 700000.0f;
-    FP16 encoded = FP16::from_float(input);
-    encoded.print_bits();
-    float decoded = encoded.to_float();
-    std::cout << "Decoded float: " << decoded << "\n";
+    run_tests();
     return 0;
 }
